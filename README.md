@@ -1,0 +1,1 @@
+EoS for {u, d, N+, N-}
