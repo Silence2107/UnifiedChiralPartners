@@ -73,7 +73,7 @@ def nucleon_mass_derivative_parity_model(sigma, parity, *args):
     m0 = nucleon_m0(sigma, args[2], *args[3:])
     a = args[0]
     b = args[1] * mult  # introduce parity into the b coupling
-    return 0.5 * ((a ** 2 * sigma + 4 * m0 * m0_derivative) / (2 * m0 + b * sigma) - b)
+    return 0.5 * ((a ** 2 * sigma + 4 * m0 * m0_derivative) / np.sqrt(4 * m0 ** 2 + a ** 2 * sigma ** 2) - b)
 
 
 @dataclass
@@ -85,24 +85,27 @@ class EoSParameters:
     m_q_bare: float
     sigma_vac: float
     sigma_sat: float
+    omega_sat: float
     momentum_scale: float
-    g_coupling: float
+    gs_coupling: float
+    gv_coupling: float 
     a_coupling: float
     b_coupling: float
     mass_amplitude: float
     vacuum_pressure: float
+    g_w: float
 
 # fix parameters based on the properties of nuclear matter
-
-
-def fix_parameters(vacuum_quark_condensate, m_q_bare, m_q_vac, m_N,
-                   m_N_star, n_sat, chem_pot_sat, rel_tol, guess_moment_scale):
+def resolve_parameters(vacuum_quark_condensate, m_q_bare, m_q_vac, m_N,
+                   m_N_star, n_sat, chem_pot_sat, eta_v, g_w, rel_tol, guess_moment_scale):
     n_f = 2
     n_c = 3
     # sigma field in vacuum
     sigma_vac = m_q_bare - m_q_vac
-    # sigma coupling
-    g_coupling = sigma_vac / (2 * vacuum_quark_condensate)
+    # scalar coupling
+    gs_coupling = sigma_vac / (2 * vacuum_quark_condensate)
+    # vector coupling
+    gv_coupling = gs_coupling * eta_v
 
     def score_minimize1(x):
         moment_scale = x[0]
@@ -118,8 +121,10 @@ def fix_parameters(vacuum_quark_condensate, m_q_bare, m_q_vac, m_N,
     res1 = root(score_minimize1, x0=[guess_moment_scale], tol=rel_tol)
 
     # Time to recreate properties of symmetric nuclear matter at saturation density
+    omega_sat = 2 * g_w * gv_coupling * n_sat / mev3_fm3
+    chem_pot_sat_eff = chem_pot_sat - g_w * omega_sat
     k_fermi_at_sat = (1.5 * np.pi ** 2 * n_sat / mev3_fm3) ** (1 / 3)
-    m_N_at_sat = np.sqrt(chem_pot_sat ** 2 - k_fermi_at_sat ** 2)
+    m_N_at_sat = np.sqrt(chem_pot_sat_eff ** 2 - k_fermi_at_sat ** 2)
 
     def score_minimize2(x):
         sigma_sat = x[0]
@@ -130,7 +135,7 @@ def fix_parameters(vacuum_quark_condensate, m_q_bare, m_q_vac, m_N,
         # 1. sigma field at saturation density
         def eq1():
             # LHS
-            res = sigma_sat / (4 * g_coupling)
+            res = sigma_sat / (4 * gs_coupling)
 
             quark_mass_sat = m_q_bare - sigma_sat
             # nucl_mass_sat = 0.5 * (np.sqrt(4 * nucleon_m0(sigma_sat, mass_amplitude, m_q_bare) ** 2 + a_coupling ** 2 * sigma_sat ** 2) - b_coupling * sigma_sat)
@@ -179,7 +184,7 @@ def fix_parameters(vacuum_quark_condensate, m_q_bare, m_q_vac, m_N,
 
     vacuum_pressure = 2 * n_f * n_c * integrate(
         lambda k: k ** 2 / (2 * np.pi ** 2) * np.exp(-(k / res1.x[0]) ** 2) * np.sqrt(m_q_vac ** 2 + k ** 2), 0, np.inf)[0] - \
-        sigma_vac ** 2 / (4 * g_coupling)
+        sigma_vac ** 2 / (4 * gs_coupling)
 
     errors = [*res1.fun, *res2.fun]
     return EoSParameters(
@@ -189,33 +194,40 @@ def fix_parameters(vacuum_quark_condensate, m_q_bare, m_q_vac, m_N,
         m_q_bare=m_q_bare,
         sigma_vac=sigma_vac,
         sigma_sat=res2.x[0],
+        omega_sat=omega_sat,
         momentum_scale=res1.x[0],
-        g_coupling=g_coupling,
+        gs_coupling=gs_coupling,
+        gv_coupling=gv_coupling,
         a_coupling=res2.x[1],
         b_coupling=res2.x[2],
         mass_amplitude=res2.x[3],
-        vacuum_pressure=vacuum_pressure
+        vacuum_pressure=vacuum_pressure,
+        g_w=g_w
     )
 
 
-def resolve_sigma_field(chempots, parameters, guesses_sigma, rel_tol):
-    """Resolve the sigma field for given chemical potentials."""
+def resolve_meson_fields(chempots, parameters, guesses, rel_tol):
+    """Resolve meson fields for given chemical potentials."""
     n_f = 2
     n_c = 3
     quark_chempots = [chempots[0], chempots[1]] # u, d
     hadron_chempots = [[chempots[2], chempots[3]], [chempots[4], chempots[5]]] # [n, p] ,[n*, p*]
     def score_minimize(x):
         sigma = x[0]
+        omega = x[1]
+        quark_chempots_eff = [mu - omega for mu in quark_chempots]
+        hadron_chempots_eff = [[mu - parameters.g_w * omega for mu in hadron_chempots[0]], 
+                                 [mu - parameters.g_w * omega for mu in hadron_chempots[1]]]
+
+        parities = ['+', '-']
+        quark_mass = parameters.m_q_bare - sigma
+        nucl_masses = [nucleon_mass_parity_model(
+            sigma, p, parameters.a_coupling, parameters.b_coupling, parameters.mass_amplitude, parameters.m_q_bare) for p in parities]
+        nucl_mass_derivatives = [nucleon_mass_derivative_parity_model(
+            sigma, p, parameters.a_coupling, parameters.b_coupling, parameters.mass_amplitude, parameters.m_q_bare) for p in parities]
         # Self-consistency for sigma field
         def eq1():
-            res = sigma / (4 * parameters.g_coupling)
-            parities = ['+', '-']
-
-            quark_mass = parameters.m_q_bare - sigma
-            nucl_masses = [nucleon_mass_parity_model(
-                sigma, p, parameters.a_coupling, parameters.b_coupling, parameters.mass_amplitude, parameters.m_q_bare) for p in parities]
-            nucl_mass_derivatives = [nucleon_mass_derivative_parity_model(
-                sigma, p, parameters.a_coupling, parameters.b_coupling, parameters.mass_amplitude, parameters.m_q_bare) for p in parities]
+            res = sigma / (4 * parameters.gs_coupling)
 
             # quark contribution to sigma field
             # zero-point term
@@ -225,7 +237,7 @@ def resolve_sigma_field(chempots, parameters, guesses_sigma, rel_tol):
             res += n_c * n_f * integral1
 
             # FD term
-            for mu in quark_chempots:
+            for mu in quark_chempots_eff:
                 k_f_sqr = mu ** 2 - quark_mass ** 2
                 if k_f_sqr > 0:
                     k_f = np.sqrt(k_f_sqr)
@@ -237,7 +249,7 @@ def resolve_sigma_field(chempots, parameters, guesses_sigma, rel_tol):
             # hadron contribution to sigma field
             # FD term
             for par_index in range(2):
-                for mu in hadron_chempots[par_index]:
+                for mu in hadron_chempots_eff[par_index]:
                     k_f_sqr = mu ** 2 - nucl_masses[par_index] ** 2
                     if k_f_sqr > 0:
                         k_f = np.sqrt(k_f_sqr)
@@ -246,26 +258,50 @@ def resolve_sigma_field(chempots, parameters, guesses_sigma, rel_tol):
                         integral3 = integrate(integrand3, 0, k_f)[0]
                         res += integral3
             return res / parameters.vacuum_quark_condensate
-        return [eq1()]
-    best_result = [None, False, np.inf]
-    for guess_sigma in guesses_sigma:
-        res = root(score_minimize, x0=[guess_sigma], tol=rel_tol)
+        # Self-consistency for omega field
+        def eq2():
+            res = omega / (2 * parameters.gv_coupling)
+            # quark contribution to omega field
+            for mu in quark_chempots_eff:
+                k_f_sqr = mu ** 2 - quark_mass ** 2
+                if k_f_sqr > 0:
+                    k_f = np.sqrt(k_f_sqr)
+                    res -= n_c * k_f ** 3 / (3 * np.pi ** 2)
+            # hadron contribution to omega field
+            for par_index in range(2):
+                for mu in hadron_chempots_eff[par_index]:
+                    k_f_sqr = mu ** 2 - nucl_masses[par_index] ** 2
+                    if k_f_sqr > 0:
+                        k_f = np.sqrt(k_f_sqr)
+                        res -= parameters.g_w * k_f ** 3 / (3 * np.pi ** 2)
+            return res / parameters.vacuum_quark_condensate
+        return [eq1(), eq2()]
+
+    best_result = [np.zeros((2)), np.ones((2)), "Unoptimized"]
+    for guess in guesses:
+        res = root(score_minimize, x0=guess, tol=rel_tol)
         quark_mass = parameters.m_q_bare - res.x[0]
-        if quark_mass >= 0 and np.abs(res.fun[0]) < best_result[2]:
-            best_result = [res.x[0], res.success, np.abs(res.fun[0])]
-            if best_result[2] < rel_tol:
+        if quark_mass >= 0 and sum(res.fun ** 2) < sum(best_result[1] ** 2) and np.isnan(res.x).sum() == 0:
+            best_result = [res.x, res.fun, res.message]
+            if np.all(np.abs(best_result[1]) < rel_tol):
                 break
     return best_result
 
-
-def evaluate_pressure(chempots, parameters, sigma):
+def evaluate_pressure(chempots, parameters, meson_fields):
     """Evaluate the pressure for given chemical potentials."""
     pressure = 0.0
+    
+    sigma = meson_fields[0]
+    omega = meson_fields[1]
 
     n_f = 2
     n_c = 3
     quark_chempots = [chempots[0], chempots[1]]  # u, d
     hadron_chempots = [[chempots[2], chempots[3]], [chempots[4], chempots[5]]]  # [n, p], [n*, p*]
+
+    quark_chempots_eff = [mu - omega for mu in quark_chempots]
+    hadron_chempots_eff = [[mu - parameters.g_w * omega for mu in hadron_chempots[0]],
+                           [mu - parameters.g_w * omega for mu in hadron_chempots[1]]]
     
     quark_mass = parameters.m_q_bare - sigma
     nucl_masses = [nucleon_mass_parity_model(
@@ -278,7 +314,7 @@ def evaluate_pressure(chempots, parameters, sigma):
     integral1 = integrate(integrand1, 0, np.inf)[0]
     pressure += 2 * n_f * n_c  * integral1
     # FD term
-    for mu in quark_chempots:
+    for mu in quark_chempots_eff:
         k_f_sqr = mu ** 2 - quark_mass ** 2
         if k_f_sqr > 0:
             k_f = np.sqrt(k_f_sqr)
@@ -290,7 +326,7 @@ def evaluate_pressure(chempots, parameters, sigma):
     # hadron contribution to pressure
     # FD term
     for par_index in range(2):
-        for mu in hadron_chempots[par_index]:
+        for mu in hadron_chempots_eff[par_index]:
             k_f_sqr = mu ** 2 - nucl_masses[par_index] ** 2
             if k_f_sqr > 0:
                 k_f = np.sqrt(k_f_sqr)
@@ -300,6 +336,8 @@ def evaluate_pressure(chempots, parameters, sigma):
                 pressure += 2 * integral4
 
     # sigma field contribution to pressure
-    pressure -= sigma ** 2 / (4 * parameters.g_coupling)
+    pressure -= sigma ** 2 / (4 * parameters.gs_coupling)
+    # omega field contribution to pressure
+    pressure += omega ** 2 / (4 * parameters.gv_coupling)
 
     return pressure
