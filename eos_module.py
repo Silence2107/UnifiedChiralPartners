@@ -21,7 +21,7 @@ def nucleon_m0(sigma, amplitude, *args):
     Args:
         [0] (float): quark bare mass
         """
-    return amplitude / (1 - sigma / args[0])
+    return amplitude * (1 + 0.0 / (1 - sigma / args[0]))  
 
 
 def nucleon_m0_derivative(sigma, amplitude, *args):
@@ -29,7 +29,7 @@ def nucleon_m0_derivative(sigma, amplitude, *args):
     Args:
         [0] (float): quark bare mass
     """
-    return amplitude / (args[0] * (1 - sigma / args[0]) ** 2)
+    return 0.0 * amplitude / (args[0] * (1 - sigma / args[0]) ** 2)
 
 
 def nucleon_mass_parity_model(sigma, parity, *args):
@@ -180,7 +180,7 @@ def resolve_parameters(vacuum_quark_condensate, m_q_bare, m_q_vac, m_N,
 
         return [eq1(), eq2(), eq3(), eq4()]
 
-    res2 = root(score_minimize2, x0=[0.0, 0.1, 0.5, m_N / 2], tol=rel_tol)
+    res2 = root(score_minimize2, x0=[sigma_vac, 5.0, -2.0, m_N / 2], tol=rel_tol)
 
     vacuum_pressure = 2 * n_f * n_c * integrate(
         lambda k: k ** 2 / (2 * np.pi ** 2) * np.exp(-(k / res1.x[0]) ** 2) * np.sqrt(m_q_vac ** 2 + k ** 2), 0, np.inf)[0] - \
